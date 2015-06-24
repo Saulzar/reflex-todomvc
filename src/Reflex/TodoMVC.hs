@@ -141,14 +141,14 @@ todoItem :: MonadWidget t m
          => Dynamic t Task
          -> m (Event t (Task -> Maybe Task))
 todoItem todo = do
-  description <- liftM nubDyn $ mapDyn taskDescription todo
+  description <- nubDyn <$> mapDyn taskDescription todo
   rec -- Construct the attributes for our element; use 
   
       classes <- combineDyn (\t e -> catMaybes [toMaybe "completed" $ taskCompleted t, toMaybe "editing" e]) todo editing'
       (editing', changeTodo) <- li_ [classes_ ~: classes] $ do
         (setCompleted, destroy, startEditing) <- div_ [class_ -: "view"] $ do
           -- Display the todo item's completed status, and allow it to be set
-          completed <- liftM nubDyn $ mapDyn taskCompleted todo
+          completed <- nubDyn <$> mapDyn taskCompleted todo
           completedCheckbox <- checkboxView (constDyn $ "class" =: "toggle") completed
           let setCompleted = not <$> tag (current completed) completedCheckbox
           -- Display the todo item's name for viewing purposes
@@ -224,7 +224,7 @@ controls tasks = do
       
     return (activeFilter, clearCompleted)
 
--- | Display static information about the application
+-- | Display static information about the application 
 infoFooter :: MonadWidget t m => m ()
 infoFooter = footer_ [class_ -: "info"] $ do
   p_ [] $ text "Click to edit a todo"
