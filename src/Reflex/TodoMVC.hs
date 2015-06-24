@@ -33,9 +33,25 @@ insertNew_ :: (Enum k, Ord k) => v -> Map k v -> Map k v
 insertNew_ v m = case Map.maxViewWithKey m of
   Nothing -> Map.singleton (toEnum 0) v
   Just ((k, _), _) -> Map.insert (succ k) v m
+  
+
+setAllCompleted :: Bool -> Map k Task -> Map k Task
+setAllCompleted allCompleted = fmap (\t -> t { taskCompleted = allCompleted })
+
+setDescription :: String -> Task -> Task
+setDescription d t = t { taskDescription = d }
+
+stripDescription :: Task -> Maybe Task
+stripDescription t = case T.unpack $ T.strip $ T.pack (taskDescription t) of 
+    ""      -> Nothing 
+    trimmed -> Just t { taskDescription = trimmed }
 
 initialTasks :: Map Int Task
 initialTasks = Map.empty
+
+updateMap :: Ord k => Map k (a -> Maybe a) -> Map k a -> Map k a
+updateMap updates items = Map.union unchanged $ Map.mapMaybe id $ Map.intersectionWith ($) updates items where    
+    unchanged = Map.difference items updates
 
 --------------------------------------------------------------------------------
 -- Filters
@@ -99,14 +115,14 @@ taskEntry = do
     schedulePostBuild $ liftIO $ elementFocus $ _textInput_element descriptionBox
     let -- | Get the current value of the textbox whenever the user hits enter
         newValue = tag (current $ _textInput_value descriptionBox) newValueEntered
-        -- | Strip leading and trailing whitespace from the user's entry, and discard it if nothing remains
-        stripDescription d = case T.unpack $ T.strip $ T.pack d of
-          "" -> Nothing
-          trimmed -> Just $ Task trimmed False
     -- Set focus when the user enters a new Task
     performEvent_ $ fmap (const $ liftIO $ elementFocus $ _textInput_element descriptionBox) newValueEntered
-    return $ fmapMaybe stripDescription newValue
+    -- | Strip leading and trailing whitespace from the user's entry, and discard it if nothing remains
+    return $ fmapMaybe (\d -> stripDescription $ Task d False) newValue
 
+
+
+    
 -- | Display the user's Tasks, subject to a Filter; return requested modifications to the Task list
 taskList :: (MonadWidget t m, Ord k, Show k)
          => Dynamic t Filter
@@ -122,18 +138,14 @@ taskList activeFilter tasks = elAttr "section" ("class" =: "main") $ do
   visibleTasks <- combineDyn (Map.filter . satisfiesFilter) activeFilter tasks
   -- Hide the item list itself if there are no items
   anyVisible <- mapDyn (toMaybe "visibility:hidden" . Map.null) visibleTasks
-
   -- Display the items
   items <- ul_ [class_ -: "todo-list", style_ ~? anyVisible] $ do
     list visibleTasks todoItem
   -- Aggregate the changes produced by the elements
-  let combineItemChanges = fmap (foldl' (.) id) . mergeList . map (\(k, v) -> fmap (flip Map.update k) v) . Map.toList
-  itemChangeEvent <- mapDyn combineItemChanges items
-  let itemChanges = switch $ current itemChangeEvent
-      -- Change all items' completed state when the toggleAll button is clicked
-      toggleAllChanges = fmap (\oldAllCompletedState -> fmap (\t -> t { taskCompleted = not oldAllCompletedState })) $ tag (current toggleAllState) toggleAll
-  return $ mergeWith (.) [ itemChanges
-                         , toggleAllChanges
+  itemChangeEvent <- mapDyn (fmap updateMap . mergeMap) items
+  return $ mergeWith (.) [ switch $ current itemChangeEvent
+                          -- Change all items' completed state when the toggleAll button is clicked_
+                         , setAllCompleted . not <$> tag (current toggleAllState) toggleAll
                          ]
 
 -- | Display an individual todo item
@@ -161,7 +173,7 @@ todoItem todo = do
         let setEditValue = tagDyn description $ ffilter id $ updated editing'
         editBox <- textInput $ def & setValue .~ setEditValue & attributes .~ constDyn ("class" =: "edit" <> "name" =: "title")
         let -- Set the todo item's description when the user leaves the textbox or presses enter in it
-            setDescription = tag (current $ _textInput_value editBox) $ leftmost
+            newDescription = tag (current $ _textInput_value editBox) $ leftmost
               [ const () <$> (ffilter (==keycodeEnter) $ _textInput_keypress editBox)
               , const () <$> (ffilter not $ updated $ _textInput_hasFocus editBox)
               ]
@@ -170,15 +182,15 @@ todoItem todo = do
             -- Put together all the ways the todo item can change itself
             changeSelf = mergeWith (>=>) [ fmap (\c t -> Just $ t { taskCompleted = c }) setCompleted
                                          , fmap (const $ const Nothing) destroy
-                                         , fmap (\d t -> case T.unpack $ T.strip $ T.pack d of { "" -> Nothing ; trimmed -> Just $ t { taskDescription = trimmed } }) setDescription
+                                         , fmap (\d -> stripDescription . setDescription d) newDescription
                                          ]
         -- Set focus on the edit box when we enter edit mode
-        afterEdit <- delay 1000 startEditing
+        afterEdit <- delay 0 startEditing
         performEvent_ $ ffor afterEdit $ const $  liftIO $ elementFocus $ _textInput_element editBox
         -- Without the delay, the focus doesn't take effect because the element hasn't become unhidden yet; we need to use postGui to ensure that this is threadsafe when built with GTK
         -- Determine the current editing state; initially false, but can be modified by various events
         editing <- holdDyn False $ leftmost [ fmap (const True) startEditing
-                                            , fmap (const False) setDescription
+                                            , fmap (const False) newDescription
                                             , fmap (const False) cancelEdit
                                             ]
         return (editing, changeSelf)
