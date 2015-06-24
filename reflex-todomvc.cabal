@@ -18,7 +18,8 @@ library
     reflex,
     ghcjs-dom,
     reflex-dom,
-    containers,
+    reflex-html,
+    containers, 
     file-embed,
     text,
     mtl

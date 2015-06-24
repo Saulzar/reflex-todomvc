@@ -8,15 +8,15 @@ import Control.Monad hiding (mapM, mapM_, forM, forM_, sequence)
 import Control.Monad.Trans
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Foldable
+import Data.Foldable hiding (for_)
 import Data.Monoid ((<>))
-import Data.List (intercalate)
+import Data.Maybe (catMaybes)
 import Data.FileEmbed
 import Control.Concurrent
 import qualified Data.Text as T
 
 import Reflex
-import Reflex.Dom
+import Reflex.Dom.Html
 
 --------------------------------------------------------------------------------
 -- Model
@@ -54,6 +54,8 @@ satisfiesFilter f = case f of
   All -> const True
   Active -> not . taskCompleted
   Completed -> taskCompleted
+  
+ 
 
 --------------------------------------------------------------------------------
 -- View
@@ -64,8 +66,8 @@ main = mainWidgetWithCss $(embedFile "style.css") todoMVC
 
 todoMVC :: MonadWidget t m => m ()
 todoMVC = do
-  elAttr "div" ("class" =: "todomvc-wrapper" <> "visibility" =: "hidden") $ do
-    elAttr "section" ("class" =: "todoapp") $ do
+  div_ [class_ -: "todomvc-wrapper", visibility_ -: "hidden"] $ do
+    section_ [class_ -: "todoapp"] $ do  
       mainHeader
       rec tasks <- foldDyn ($) initialTasks $ mergeWith (.)
                      [ fmap insertNew_ newTask
@@ -80,12 +82,12 @@ todoMVC = do
 
 -- | Display the main header
 mainHeader :: MonadWidget t m => m ()
-mainHeader = el "h1" $ text "todos"
+mainHeader = h1_ [] $  text "todos"
 
 -- | Display an input field; produce new Tasks when the user creates them
 taskEntry :: MonadWidget t m => m (Event t Task)
-taskEntry = do
-  elAttr "header" ("class" =: "header") $ do
+taskEntry = do 
+  header_ [class_ -: "header"] $ do
     -- Create the textbox; it will be cleared whenever the user presses enter
     rec let newValueEntered = ffilter (==keycodeEnter) (_textInput_keypress descriptionBox)
         descriptionBox <- textInput $ def & setValue .~ fmap (const "") newValueEntered
@@ -115,16 +117,14 @@ taskList activeFilter tasks = elAttr "section" ("class" =: "main") $ do
   toggleAllState <- mapDyn (all taskCompleted . Map.elems) tasks
   toggleAllAttrs <- mapDyn (\t -> "class" =: "toggle-all" <> "name" =: "toggle" <> if Map.null t then "style" =: "visibility:hidden" else mempty) tasks
   toggleAll <- checkboxView toggleAllAttrs toggleAllState
-  elAttr "label" ("for" =: "toggle-all") $ text "Mark all as complete"
+  label_ [for_ -: "toggle-all"] $ text "Mark all as complete"
   -- Filter the item list
   visibleTasks <- combineDyn (Map.filter . satisfiesFilter) activeFilter tasks
   -- Hide the item list itself if there are no items
-  itemListAttrs <- forDyn visibleTasks $ \t -> mconcat
-    [ "class" =: "todo-list"
-    , if Map.null t then "style" =: "visibility:hidden" else mempty
-    ]
+  anyVisible <- mapDyn (toMaybe "visibility:hidden" . Map.null) visibleTasks
+
   -- Display the items
-  items <- elDynAttr "ul" itemListAttrs $ do
+  items <- ul_ [class_ -: "todo-list", style_ ~? anyVisible] $ do
     list visibleTasks todoItem
   -- Aggregate the changes produced by the elements
   let combineItemChanges = fmap (foldl' (.) id) . mergeList . map (\(k, v) -> fmap (flip Map.update k) v) . Map.toList
@@ -143,28 +143,30 @@ todoItem :: MonadWidget t m
 todoItem todo = do
   description <- liftM nubDyn $ mapDyn taskDescription todo
   rec -- Construct the attributes for our element; use 
-      attrs <- combineDyn (\t e -> "class" =: intercalate " " ((if taskCompleted t then ["completed"] else []) <> (if e then ["editing"] else []))) todo editing'
-      (editing', changeTodo) <- elDynAttr "li" attrs $ do
-        (setCompleted, destroy, startEditing) <- elAttr "div" ("class" =: "view") $ do
+  
+      classes <- combineDyn (\t e -> catMaybes [toMaybe "completed" $ taskCompleted t, toMaybe "editing" e]) todo editing'
+      (editing', changeTodo) <- li_ [classes_ ~: classes] $ do
+        (setCompleted, destroy, startEditing) <- div_ [class_ -: "view"] $ do
           -- Display the todo item's completed status, and allow it to be set
           completed <- liftM nubDyn $ mapDyn taskCompleted todo
           completedCheckbox <- checkboxView (constDyn $ "class" =: "toggle") completed
-          let setCompleted = fmap not $ tag (current completed) completedCheckbox
+          let setCompleted = not <$> tag (current completed) completedCheckbox
           -- Display the todo item's name for viewing purposes
-          (descriptionLabel, _) <- el' "label" $ dynText description
+          labelClick <- label' [] $ \l -> dynText description >> clicked l
           -- Display the button for deleting the todo item
-          (destroyButton, _) <- elAttr' "button" ("class" =: "destroy") $ return ()
-          return (setCompleted, _el_clicked destroyButton, _el_clicked descriptionLabel)
+          destroyClick <- button' [class_ -: "destroy"] clicked
+          return (setCompleted, destroyClick, labelClick)
         -- Set the current value of the editBox whenever we start editing (it's not visible in non-editing mode)
+        
         let setEditValue = tagDyn description $ ffilter id $ updated editing'
         editBox <- textInput $ def & setValue .~ setEditValue & attributes .~ constDyn ("class" =: "edit" <> "name" =: "title")
         let -- Set the todo item's description when the user leaves the textbox or presses enter in it
             setDescription = tag (current $ _textInput_value editBox) $ leftmost
-              [ fmap (const ()) $ ffilter (==keycodeEnter) $ _textInput_keypress editBox
-              , fmap (const ()) $ ffilter not $ updated $ _textInput_hasFocus editBox
+              [ const () <$> (ffilter (==keycodeEnter) $ _textInput_keypress editBox)
+              , const () <$> (ffilter not $ updated $ _textInput_hasFocus editBox)
               ]
             -- Cancel editing (without changing the item's description) when the user presses escape in the textbox
-            cancelEdit = fmap (const ()) $ ffilter (==keycodeEscape) $ _textInput_keydown editBox
+            cancelEdit = const () <$> (ffilter (==keycodeEscape) $ _textInput_keydown editBox)
             -- Put together all the ways the todo item can change itself
             changeSelf = mergeWith (>=>) [ fmap (\c t -> Just $ t { taskCompleted = c }) setCompleted
                                          , fmap (const $ const Nothing) destroy
@@ -182,25 +184,30 @@ todoItem todo = do
   -- Return an event that fires whenever we change ourselves
   return changeTodo
 
+  
 -- | Display the control footer; return the user's currently-selected filter and an event that fires when the user chooses to clear all completed events
 controls :: MonadWidget t m => Dynamic t (Map k Task) -> m (Dynamic t Filter, Event t ())
 controls tasks = do
-  -- Determine the attributes for the footer; it is invisible when there are no todo items
-  controlsAttrs <- mapDyn (\t -> "class" =: "footer" <> if Map.null t then "style" =: "visibility:hidden" else mempty) tasks
-  elDynAttr "footer" controlsAttrs $ do
+  -- Determine the attributes for the footer; it is invisible when there are no todo items  
+  empty <- mapDyn (toMaybe "visibility:hidden" . Map.null) tasks
+  footer_ [class_ -: "footer", style_ ~? empty] $ do
     -- Compute the number of completed and uncompleted tasks
     (tasksCompleted, tasksLeft) <- splitDyn <=< forDyn tasks $ \m ->
       let completed = Map.size $ Map.filter taskCompleted m
       in (completed, Map.size m - completed)
-    elAttr "span" ("class" =: "todo-count") $ do
-      el "strong" $ dynText =<< mapDyn show tasksLeft
+      
+    span_ [class_ -: "todo-count"] $ do      
+      strong_ [] $ dynText =<< mapDyn show tasksLeft
       dynText =<< mapDyn (\n -> (if n == 1 then " item" else " items") <> " left") tasksLeft
-    activeFilter <- elAttr "ul" ("class" =: "filters") $ do
+      
+    activeFilter <- ul_ [class_ -: "filters"] $ do
       rec activeFilter <- holdDyn All setFilter
-          let filterButton f = el "li" $ do
-                buttonAttrs <- mapDyn (\af -> "class" =: (if f == af then "selected" else "")) activeFilter
-                (e, _) <- elDynAttr' "a" buttonAttrs $ text $ show f
-                return $ fmap (const f) (_el_clicked e)
+          let filterButton f = li_ [] $ do
+                selected <- mapDyn (\af -> toMaybe "selected" (f == af)) activeFilter
+                a' [class_ ~? selected] $ \b -> do 
+                  text $ show f
+                  fmap (const f) <$> clicked b 
+                
           allButton <- filterButton All
           text " "
           activeButton <- filterButton Active
@@ -208,21 +215,21 @@ controls tasks = do
           completedButton <- filterButton Completed
           let setFilter = leftmost [allButton, activeButton, completedButton]
       return activeFilter
-    clearCompletedAttrs <- flip mapDyn tasksCompleted $ \n -> mconcat
-      [ "class" =: "clear-completed"
-      , if n > 0 then mempty else "hidden" =: ""
-      ]
-    (clearCompletedAttrsButton, _) <- elDynAttr' "button" clearCompletedAttrs $ dynText =<< mapDyn (\n -> "Clear completed (" <> show n <> ")") tasksCompleted
-    return (activeFilter, _el_clicked clearCompletedAttrsButton)
+    
+    noneCompleted <- mapDyn (==0) tasksCompleted
+    clearCompleted <- button' [class_ -: "clear-completed", hidden_ ~: noneCompleted] $ \b -> do
+      dynText =<< mapDyn (\n -> "Clear completed (" <> show n <> ")") tasksCompleted
+      clicked b
+      
+    return (activeFilter, clearCompleted)
 
 -- | Display static information about the application
 infoFooter :: MonadWidget t m => m ()
-infoFooter = do
-  elAttr "footer" ("class" =: "info") $ do
-    el "p" $ text "Click to edit a todo"
-    el "p" $ do
-      text "Written by "
-      elAttr "a" ("href" =: "https://github.com/ryantrinkle") $ text "Ryan Trinkle"
-    el "p" $ do
+infoFooter = footer_ [class_ -: "info"] $ do
+  p_ [] $ text "Click to edit a todo"
+  p_ [] $ do
+    text "Written by "
+    a_ [href_ -: "https://github.com/ryantrinkle"] $ text "Ryan Trinkle"
+    p_ [] $ do
       text "Part of "
-      elAttr "a" ("href" =: "http://todomvc.com") $ text "TodoMVC"
+      a_ [href_ -: "http://todomvc.com"] $ text "TodoMVC"
