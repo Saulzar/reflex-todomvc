@@ -89,10 +89,10 @@ todoMVC = do
     section_ [class_ -: "todoapp"] $ do  
       mainHeader
       rec tasks <- foldDyn ($) initialTasks $ mergeWith (.)
-                     [ fmap insertNew_ newTask
+                     [ insertNew_ <$> newTask
                      , listModifyTasks
-                     , fmap (const $ Map.filter $ not . taskCompleted) clearCompleted -- Call out the type and purpose of these things
-                     ]
+                     , (Map.filter $ not . taskCompleted) <$ clearCompleted -- Call out the type and purpose of these things
+                     ] 
           newTask <- taskEntry
           listModifyTasks <- taskList activeFilter tasks
           (activeFilter, clearCompleted) <- controls tasks
