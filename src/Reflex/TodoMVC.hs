@@ -166,8 +166,6 @@ todoItem todo = do
           completedCheckbox <- checkboxView [class_ -: "toggle"] completed
           
           let completeChanged = not <$> tag (current completed) completedCheckbox
-          performEvent_ $ ffor completeChanged $ liftIO  . print
-          
           
           -- Display the todo item's name for viewing purposes
           (label, _) <- label' [] $ dynText description
