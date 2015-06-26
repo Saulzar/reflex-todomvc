@@ -36,7 +36,10 @@ insertNew_ v m = case Map.maxViewWithKey m of
   
 
 setAllCompleted :: Bool -> Map k Task -> Map k Task
-setAllCompleted allCompleted = fmap (\t -> t { taskCompleted = allCompleted })
+setAllCompleted allCompleted = fmap (setCompleted allCompleted)
+
+setCompleted :: Bool -> Task -> Task
+setCompleted completed t = t { taskCompleted = completed }
 
 setDescription :: String -> Task -> Task
 setDescription d t = t { taskDescription = d }
@@ -105,18 +108,17 @@ taskEntry :: MonadWidget t m => m (Event t Task)
 taskEntry = do 
   header_ [class_ -: "header"] $ do
     -- Create the textbox; it will be cleared whenever the user presses enter
-    rec let newValueEntered = ffilter (==keycodeEnter) (_textInput_keypress descriptionBox)
-        descriptionBox <- textInput $ def & setValue .~ fmap (const "") newValueEntered
-                                          & attributes .~ constDyn (mconcat [ "class" =: "new-todo"
-                                                                            , "placeholder" =: "What needs to be done?"
-                                                                            , "name" =: "newTodo"
-                                                                            ])
-    -- Request focus on this element when the widget is done being built
-    schedulePostBuild $ liftIO $ elementFocus $ _textInput_element descriptionBox
-    let -- | Get the current value of the textbox whenever the user hits enter
-        newValue = tag (current $ _textInput_value descriptionBox) newValueEntered
-    -- Set focus when the user enters a new Task
-    performEvent_ $ fmap (const $ liftIO $ elementFocus $ _textInput_element descriptionBox) newValueEntered
+    rec let newValueEntered = ffilter (==keycodeEnter) (keypress descriptionBox)
+    
+        postBuild <- getPostBuild
+        descriptionBox <- textInput [class_ -: "new-todo", placeholder_ -: "What needs to be done?", name_ -: "newTodo"]
+                                    $ def & setValue .~ ("" <$ newValueEntered)
+                                          & setFocus .~ leftmost [True <$ newValueEntered, True <$ postBuild]
+    -- Request focus on this element when the widget is done being built and after the user enters a new Task
+
+    -- | Get the current value of the textbox whenever the user hits enter                                      
+    let newValue = tag (current $ value descriptionBox) newValueEntered
+
     -- | Strip leading and trailing whitespace from the user's entry, and discard it if nothing remains
     return $ fmapMaybe (\d -> stripDescription $ Task d False) newValue
 
@@ -128,19 +130,19 @@ taskList :: (MonadWidget t m, Ord k, Show k)
          => Dynamic t Filter
          -> Dynamic t (Map k Task)
          -> m (Event t (Map k Task -> Map k Task))
-taskList activeFilter tasks = elAttr "section" ("class" =: "main") $ do
+taskList activeFilter tasks = section_ [class_ -: "main"] $ do
   -- Create "toggle all" button
   toggleAllState <- mapDyn (all taskCompleted . Map.elems) tasks
-  toggleAllAttrs <- mapDyn (\t -> "class" =: "toggle-all" <> "name" =: "toggle" <> if Map.null t then "style" =: "visibility:hidden" else mempty) tasks
-  toggleAll <- checkboxView toggleAllAttrs toggleAllState
+  
+  hidden <- mapDyn  Map.null tasks
+  toggleAll <- checkboxView [class_ -: "toggle-all", name_ -: "toggle", styleHidden ~: hidden]  toggleAllState
   label_ [for_ -: "toggle-all"] $ text "Mark all as complete"
   -- Filter the item list
   visibleTasks <- combineDyn (Map.filter . satisfiesFilter) activeFilter tasks
   -- Hide the item list itself if there are no items
-  anyVisible <- mapDyn (toMaybe "visibility:hidden" . Map.null) visibleTasks
+  anyVisible <- mapDyn Map.null visibleTasks
   -- Display the items
-  items <- ul_ [class_ -: "todo-list", style_ ~? anyVisible] $ do
-    list visibleTasks todoItem
+  items <- ul_ [class_ -: "todo-list", styleHidden ~: anyVisible] $ list visibleTasks todoItem
   -- Aggregate the changes produced by the elements
   itemChangeEvent <- mapDyn (fmap updateMap . mergeMap) items
   return $ mergeWith (.) [ switch $ current itemChangeEvent
@@ -158,40 +160,46 @@ todoItem todo = do
   
       classes <- combineDyn (\t e -> catMaybes [toMaybe "completed" $ taskCompleted t, toMaybe "editing" e]) todo editing'
       (editing', changeTodo) <- li_ [classes_ ~: classes] $ do
-        (setCompleted, destroy, startEditing) <- div_ [class_ -: "view"] $ do
+        (completeChanged, destroy, startEditing) <- div_ [class_ -: "view"] $ do
           -- Display the todo item's completed status, and allow it to be set
           completed <- nubDyn <$> mapDyn taskCompleted todo
-          completedCheckbox <- checkboxView (constDyn $ "class" =: "toggle") completed
-          let setCompleted = not <$> tag (current completed) completedCheckbox
+          completedCheckbox <- checkboxView [class_ -: "toggle"] completed
+          
+          let completeChanged = not <$> tag (current completed) completedCheckbox
+          performEvent_ $ ffor completeChanged $ liftIO  . print
+          
+          
           -- Display the todo item's name for viewing purposes
-          labelClick <- label' [] $ \l -> dynText description >> clicked l
+          (label, _) <- label' [] $ dynText description
           -- Display the button for deleting the todo item
-          destroyClick <- button' [class_ -: "destroy"] clicked
-          return (setCompleted, destroyClick, labelClick)
+          (destroy, _) <- button' [class_ -: "destroy"] $ return ()
+          return (completeChanged, clicked destroy, clicked label)
         -- Set the current value of the editBox whenever we start editing (it's not visible in non-editing mode)
         
         let setEditValue = tagDyn description $ ffilter id $ updated editing'
-        editBox <- textInput $ def & setValue .~ setEditValue & attributes .~ constDyn ("class" =: "edit" <> "name" =: "title")
+            
+        afterEdit <- delay 0 startEditing    
+        editBox <- textInput [class_ -: "edit", name_ -: "title"] $ 
+          def & setValue .~ setEditValue & setFocus .~ (True <$ afterEdit)
+          
         let -- Set the todo item's description when the user leaves the textbox or presses enter in it
-            newDescription = tag (current $ _textInput_value editBox) $ leftmost
-              [ const () <$> (ffilter (==keycodeEnter) $ _textInput_keypress editBox)
-              , const () <$> (ffilter not $ updated $ _textInput_hasFocus editBox)
-              ]
+            newDescription = tag (current $ value editBox) $ leftmost
+              [  () <$ (ffilter (==keycodeEnter) $ keypress editBox)
+              ,  () <$ (ffilter not $ updated $ hasFocus editBox)
+              ] 
             -- Cancel editing (without changing the item's description) when the user presses escape in the textbox
-            cancelEdit = const () <$> (ffilter (==keycodeEscape) $ _textInput_keydown editBox)
+            cancelEdit = const () <$> (ffilter (==keycodeEscape) $ keydown editBox)
             -- Put together all the ways the todo item can change itself
-            changeSelf = mergeWith (>=>) [ fmap (\c t -> Just $ t { taskCompleted = c }) setCompleted
-                                         , fmap (const $ const Nothing) destroy
+            changeSelf = mergeWith (>=>) [ fmap (\c -> Just . setCompleted c) completeChanged
+                                         , const Nothing <$ destroy
                                          , fmap (\d -> stripDescription . setDescription d) newDescription
                                          ]
-        -- Set focus on the edit box when we enter edit mode
-        afterEdit <- delay 0 startEditing
-        performEvent_ $ ffor afterEdit $ const $  liftIO $ elementFocus $ _textInput_element editBox
+
         -- Without the delay, the focus doesn't take effect because the element hasn't become unhidden yet; we need to use postGui to ensure that this is threadsafe when built with GTK
         -- Determine the current editing state; initially false, but can be modified by various events
-        editing <- holdDyn False $ leftmost [ fmap (const True) startEditing
-                                            , fmap (const False) newDescription
-                                            , fmap (const False) cancelEdit
+        editing <- holdDyn False $ leftmost [ True  <$ startEditing
+                                            , False <$ newDescription
+                                            , False <$ cancelEdit
                                             ]
         return (editing, changeSelf)
   -- Return an event that fires whenever we change ourselves
@@ -202,8 +210,8 @@ todoItem todo = do
 controls :: MonadWidget t m => Dynamic t (Map k Task) -> m (Dynamic t Filter, Event t ())
 controls tasks = do
   -- Determine the attributes for the footer; it is invisible when there are no todo items  
-  empty <- mapDyn (toMaybe "visibility:hidden" . Map.null) tasks
-  footer_ [class_ -: "footer", style_ ~? empty] $ do
+  empty <- mapDyn (Map.null) tasks
+  footer_ [class_ -: "footer", styleHidden ~: empty] $ do
     -- Compute the number of completed and uncompleted tasks
     (tasksCompleted, tasksLeft) <- splitDyn <=< forDyn tasks $ \m ->
       let completed = Map.size $ Map.filter taskCompleted m
@@ -217,9 +225,8 @@ controls tasks = do
       rec activeFilter <- holdDyn All setFilter
           let filterButton f = li_ [] $ do
                 selected <- mapDyn (\af -> toMaybe "selected" (f == af)) activeFilter
-                a' [class_ ~? selected] $ \b -> do 
-                  text $ show f
-                  fmap (const f) <$> clicked b 
+                (button, _) <- a' [class_ ~? selected] $ text $ show f
+                return $ f <$ clicked button
                 
           allButton <- filterButton All
           text " "
@@ -230,11 +237,11 @@ controls tasks = do
       return activeFilter
     
     noneCompleted <- mapDyn (==0) tasksCompleted
-    clearCompleted <- button' [class_ -: "clear-completed", hidden_ ~: noneCompleted] $ \b -> do
+    (clearCompleted, _) <- button' [class_ -: "clear-completed", hidden_ ~: noneCompleted] $  do
       dynText =<< mapDyn (\n -> "Clear completed (" <> show n <> ")") tasksCompleted
-      clicked b
       
-    return (activeFilter, clearCompleted)
+      
+    return (activeFilter, clicked clearCompleted)
 
 -- | Display static information about the application 
 infoFooter :: MonadWidget t m => m ()
