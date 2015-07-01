@@ -1,4 +1,4 @@
-{-# LANGUAGE RecursiveDo, ScopedTypeVariables, FlexibleContexts, TypeFamilies, ConstraintKinds, TemplateHaskell #-}
+{-# LANGUAGE RecursiveDo, ScopedTypeVariables, FlexibleContexts, TypeFamilies, ConstraintKinds, TemplateHaskell, OverloadedLists #-}
 module Reflex.TodoMVC where
 
 import Prelude hiding (mapM, mapM_, all, sequence)
@@ -114,6 +114,8 @@ taskEntry = do
         descriptionBox <- textInput [class_ -: "new-todo", placeholder_ -: "What needs to be done?", name_ -: "newTodo"]
                                     $ def & setValue .~ ("" <$ newValueEntered)
                                           & setFocus .~ leftmost [True <$ newValueEntered, True <$ postBuild]
+          
+                                          
     -- Request focus on this element when the widget is done being built and after the user enters a new Task
 
     -- | Get the current value of the textbox whenever the user hits enter                                      
@@ -157,9 +159,10 @@ todoItem :: MonadWidget t m
 todoItem todo = do
   description <- nubDyn <$> mapDyn taskDescription todo
   rec -- Construct the attributes for our element; use 
-  
-      classes <- combineDyn (\t e -> catMaybes [toMaybe "completed" $ taskCompleted t, toMaybe "editing" e]) todo editing'
-      (editing', changeTodo) <- li_ [classes_ ~: classes] $ do
+      isCompleted <- mapDyn (toMaybe "completed" . taskCompleted) todo
+      isEditing <- mapDyn (toMaybe "editing") editing'
+      
+      (editing', changeTodo) <- li_ [class_ ~? isEditing, class_ ~? isCompleted] $ do
         (completeChanged, destroy, startEditing) <- div_ [class_ -: "view"] $ do
           -- Display the todo item's completed status, and allow it to be set
           completed <- nubDyn <$> mapDyn taskCompleted todo
@@ -235,12 +238,17 @@ controls tasks = do
       return activeFilter
     
     noneCompleted <- mapDyn (==0) tasksCompleted
-    (clearCompleted, _) <- button' [class_ -: "clear-completed", hidden_ ~: noneCompleted] $  do
+    (clearCompleted, _) <- button' (class_ -: "clear-completed" <> hidden_ ~: noneCompleted) $  do
       dynText =<< mapDyn (\n -> "Clear completed (" <> show n <> ")") tasksCompleted
       
       
     return (activeFilter, clicked clearCompleted)
 
+initial = Map.fromList [(1, "one"), (2, "twoo"), (3, "three"), (4, "crappy")] 
+    
+insert :: Integer -> Map Integer String -> Map Integer String
+insert k m = ((k + 1) =: show k) <> m     
+    
 -- | Display static information about the application 
 infoFooter :: MonadWidget t m => m ()
 infoFooter = footer_ [class_ -: "info"] $ do
