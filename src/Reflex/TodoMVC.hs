@@ -1,9 +1,8 @@
 {-# LANGUAGE RecursiveDo, ScopedTypeVariables, FlexibleContexts, TypeFamilies, ConstraintKinds, TemplateHaskell, OverloadedLists #-}
-module Reflex.TodoMVC where
+module Reflex.TodoMVC (main) where
 
 import Prelude hiding (mapM, mapM_, all, sequence)
 
-import GHCJS.DOM.Element
 import Control.Monad hiding (mapM, mapM_, forM, forM_, sequence)
 import Control.Monad.Trans
 import Data.Map (Map)
@@ -16,7 +15,9 @@ import Control.Concurrent
 import qualified Data.Text as T
 
 import Reflex
-import Reflex.Dom.Html
+import Reflex.Html
+
+import Reflex.Host.App
 
 --------------------------------------------------------------------------------
 -- Model
@@ -81,9 +82,9 @@ satisfiesFilter f = case f of
 --------------------------------------------------------------------------------
 
 main :: IO ()
-main = mainWidgetWithCss $(embedFile "style.css") todoMVC
+main = runHtml (withCss $(embedFile "style.css")) todoMVC
 
-todoMVC :: MonadWidget t m => m ()
+todoMVC :: MonadAppHost t m => HtmlT m ()
 todoMVC = do
   div_ [class_ -: "todomvc-wrapper", visibility_ -: "hidden"] $ do
     section_ [class_ -: "todoapp"] $ do  
@@ -100,17 +101,17 @@ todoMVC = do
     infoFooter
 
 -- | Display the main header
-mainHeader :: MonadWidget t m => m ()
+mainHeader :: MonadAppHost t m => HtmlT m ()
 mainHeader = h1_ [] $  text "todos"
 
 -- | Display an input field; produce new Tasks when the user creates them
-taskEntry :: MonadWidget t m => m (Event t Task)
+taskEntry :: MonadAppHost t m => HtmlT m (Event t Task)
 taskEntry = do 
   header_ [class_ -: "header"] $ do
     -- Create the textbox; it will be cleared whenever the user presses enter
     rec let newValueEntered = ffilter (==keycodeEnter) (keypress descriptionBox)
     
-        postBuild <- getPostBuild
+        postBuild <- lift getPostBuild
         descriptionBox <- textInput [class_ -: "new-todo", placeholder_ -: "What needs to be done?", name_ -: "newTodo"]
                                     $ def & setValue .~ ("" <$ newValueEntered)
                                           & setFocus .~ leftmost [True <$ newValueEntered, True <$ postBuild]
@@ -128,10 +129,10 @@ taskEntry = do
 
     
 -- | Display the user's Tasks, subject to a Filter; return requested modifications to the Task list
-taskList :: (MonadWidget t m, Ord k, Show k)
+taskList :: (MonadAppHost t m, Ord k, Show k)
          => Dynamic t Filter
          -> Dynamic t (Map k Task)
-         -> m (Event t (Map k Task -> Map k Task))
+         -> HtmlT m (Event t (Map k Task -> Map k Task))
 taskList activeFilter tasks = section_ [class_ -: "main"] $ do
   -- Create "toggle all" button
   toggleAllState <- mapDyn (all taskCompleted . Map.elems) tasks
@@ -153,9 +154,9 @@ taskList activeFilter tasks = section_ [class_ -: "main"] $ do
                          ]
 
 -- | Display an individual todo item
-todoItem :: MonadWidget t m
+todoItem :: MonadAppHost t m
          => Dynamic t Task
-         -> m (Event t (Task -> Maybe Task))
+         -> HtmlT m (Event t (Task -> Maybe Task))
 todoItem todo = do
   description <- nubDyn <$> mapDyn taskDescription todo
   rec -- Construct the attributes for our element; use 
@@ -185,8 +186,8 @@ todoItem todo = do
           
         let -- Set the todo item's description when the user leaves the textbox or presses enter in it
             newDescription = tag (current $ value editBox) $ leftmost
-              [  () <$ (ffilter (==keycodeEnter) $ keypress editBox)
-              ,  () <$ (ffilter not $ updated $ hasFocus editBox)
+              [  void $ (ffilter (==keycodeEnter) $ keypress editBox)
+              ,  void $ (ffilter not $ updated $ hasFocus editBox)
               ] 
             -- Cancel editing (without changing the item's description) when the user presses escape in the textbox
             cancelEdit = const () <$> (ffilter (==keycodeEscape) $ keydown editBox)
@@ -208,7 +209,7 @@ todoItem todo = do
 
   
 -- | Display the control footer; return the user's currently-selected filter and an event that fires when the user chooses to clear all completed events
-controls :: MonadWidget t m => Dynamic t (Map k Task) -> m (Dynamic t Filter, Event t ())
+controls :: MonadAppHost t m => Dynamic t (Map k Task) -> HtmlT m (Dynamic t Filter, Event t ())
 controls tasks = do
   -- Determine the attributes for the footer; it is invisible when there are no todo items  
   empty <- mapDyn (Map.null) tasks
@@ -244,13 +245,10 @@ controls tasks = do
       
     return (activeFilter, clicked clearCompleted)
 
-initial = Map.fromList [(1, "one"), (2, "twoo"), (3, "three"), (4, "crappy")] 
-    
-insert :: Integer -> Map Integer String -> Map Integer String
-insert k m = ((k + 1) =: show k) <> m     
+  
     
 -- | Display static information about the application 
-infoFooter :: MonadWidget t m => m ()
+infoFooter :: MonadAppHost t m => HtmlT m ()
 infoFooter = footer_ [class_ -: "info"] $ do
   p_ [] $ text "Click to edit a todo"
   p_ [] $ do
@@ -259,3 +257,6 @@ infoFooter = footer_ [class_ -: "info"] $ do
     p_ [] $ do
       text "Part of "
       a_ [href_ -: "http://todomvc.com"] $ text "TodoMVC"
+
+      
+
